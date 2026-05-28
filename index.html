@@ -94,7 +94,26 @@ input:focus{border-color:var(--accent);}
 .status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-family:var(--sans);font-size:11px;font-weight:600;white-space:nowrap;}
 .noarea-footer-note{padding:9px 16px;font-family:var(--mono);font-size:10px;color:var(--muted);border-top:1px solid var(--border);background:var(--surf2);}
 .dash-footer{margin-top:20px;font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.9;padding:14px 0;border-top:1px solid var(--border);}
-@media(max-width:800px){.kpi-row,.cyc-row{grid-template-columns:repeat(2,1fr);}.chart-grid-2{grid-template-columns:1fr;}.view-toggle{flex-direction:column;}.dash-hdr{flex-direction:column;align-items:flex-start;}}
+/* Snapshot donut card */
+.snap-card{background:var(--surf);border:1px solid var(--border);border-radius:9px;padding:15px 17px 16px;margin-bottom:12px;}
+.snap-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+.snap-panels{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.snap-panel{padding:14px 16px 16px;border-right:1px solid var(--border);position:relative;}
+.snap-panel:last-child{border-right:none;}
+.snap-panel-lbl{font-family:var(--sans);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:12px;text-align:center;}
+.snap-donuts{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.snap-donut-wrap{display:flex;flex-direction:column;align-items:center;gap:6px;}
+.snap-donut-area{font-family:var(--sans);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
+.snap-donut-canvas{position:relative;width:96px;height:96px;}
+.snap-donut-canvas canvas{display:block;}
+.snap-donut-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;}
+.snap-donut-total{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--bright);line-height:1;}
+.snap-donut-sublbl{font-family:var(--sans);font-size:9px;color:var(--muted);line-height:1;margin-top:2px;}
+.snap-legend{display:flex;flex-direction:column;gap:3px;margin-top:6px;width:100%;}
+.snap-leg-row{display:flex;align-items:center;gap:5px;font-family:var(--sans);font-size:10px;color:var(--text);}
+.snap-leg-dot{width:7px;height:7px;border-radius:2px;flex-shrink:0;}
+.snap-leg-val{font-family:var(--mono);font-size:9px;color:var(--muted);margin-left:auto;}
+@media(max-width:800px){.kpi-row,.cyc-row{grid-template-columns:repeat(2,1fr);}.chart-grid-2{grid-template-columns:1fr;}.view-toggle{flex-direction:column;}.dash-hdr{flex-direction:column;align-items:flex-start;}.snap-panels{grid-template-columns:1fr;}.snap-panel{border-right:none;border-bottom:1px solid var(--border);}.snap-panel:last-child{border-bottom:none;}}
 </style>
 </head>
 <body>
@@ -141,11 +160,11 @@ async function fetchAllTasks(token,listId,onMsg){
   const hdrs={Authorization:token},base='https://api.clickup.com/api/v2/list/'+listId+'/task';
   let all=[],page=0;
   while(true){
-    onMsg('Trayendo tareas (pagina '+(page+1)+')...');
+    onMsg('Trayendo tareas — pag '+(page+1)+' ('+all.length+' cargadas)...');
     const res=await fetch(base+'?subtasks=true&include_closed=true&page='+page,{headers:hdrs});
     if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.err||'HTTP '+res.status);}
     const data=await res.json(),tasks=data.tasks||[];
-    all=all.concat(tasks);if(tasks.length<100||page>=9)break;page++;
+    all=all.concat(tasks);if(tasks.length<100)break;page++;
   }
   return all;
 }
@@ -260,9 +279,117 @@ function buildCohorte(data,M12){
     scales:{x:{...AX,stacked:true},y:{...AX,stacked:true,beginAtZero:true,ticks:{...AX.ticks,precision:0}}}}});
 }
 
+// ── Snapshot donuts ──────────────────────────────────────────────
+const STATUS_ORDER=[
+  {key:'completo',     label:'Completo',    color:'#3db88b'},
+  {key:'test ok',      label:'Test OK',     color:'#3db88b'},
+  {key:'en test',      label:'En Test',     color:'#f8ae00'},
+  {key:'correcciones', label:'Correcciones',color:'#6647f0'},
+  {key:'en desarrollo',label:'Desarrollo',  color:'#1090e0'},
+  {key:'en definicion',label:'Definicion',  color:'#d33d44'},
+  {key:'definido',     label:'Definido',    color:'#82c91e'},
+  {key:'pendiente',    label:'Pendiente',   color:'#87909e'},
+  {key:'bloqueado (interno)',label:'Bloq.Int',color:'#555'},
+  {key:'bloqueado (externo)',label:'Bloq.Ext',color:'#555'},
+  {key:'pausado',      label:'Pausado',     color:'#9e9e9e'},
+];
+
+function getStatusBreakdown(items){
+  const counts={};
+  items.forEach(t=>{
+    const s=(t.status?.status||'sin estado').toLowerCase().trim();
+    counts[s]=(counts[s]||0)+1;
+  });
+  const ordered=[];const seen=new Set();
+  STATUS_ORDER.forEach(({key,label,color})=>{
+    if(counts[key]){ordered.push({label,color,n:counts[key]});seen.add(key);}
+  });
+  Object.entries(counts).forEach(([k,n])=>{
+    if(!seen.has(k))ordered.push({label:k,color:'#3d5575',n});
+  });
+  return ordered;
+}
+
+function buildDonut(canvasId,items){
+  kill(canvasId);
+  const el=document.getElementById(canvasId);
+  if(!el||!items.length)return;
+  const bd=getStatusBreakdown(items);
+  if(!bd.length)return;
+  _ch[canvasId]=new Chart(el.getContext('2d'),{
+    type:'doughnut',
+    data:{
+      labels:bd.map(x=>x.label),
+      datasets:[{data:bd.map(x=>x.n),backgroundColor:bd.map(x=>x.color+'dd'),borderColor:bd.map(x=>x.color),borderWidth:1,hoverOffset:4}]
+    },
+    options:{
+      responsive:false,
+      cutout:'70%',
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          ...TT,
+          callbacks:{label:i=>' '+i.label+': '+i.raw+' ('+Math.round(i.raw/items.length*100)+'%)'}
+        }
+      }
+    }
+  });
+}
+
+function renderSnapshot(data){
+  // Solo muestra el panel correspondiente al _viewMode activo
+  const VIEW_MAP={all:{key:'all',label:'Todas'},tasks:{key:'tasks',label:'Tareas padre'},subs:{key:'subs',label:'Subtareas'}};
+  const p=VIEW_MAP[_viewMode]||VIEW_MAP['all'];
+  const items=data[p.key].items;
+
+  const donutBlock=(sfx,aItems,color,areaName)=>{
+    const cid='snap-'+p.key+'-'+sfx;
+    const bd=getStatusBreakdown(aItems);
+    const legHTML=bd.slice(0,6).map(x=>'<div class="snap-leg-row"><span class="snap-leg-dot" style="background:'+x.color+'"></span><span>'+x.label+'</span><span class="snap-leg-val">'+x.n+'</span></div>').join('');
+    return '<div class="snap-donut-wrap">'+
+      '<div class="snap-donut-area" style="color:'+color+'">'+areaName+'</div>'+
+      '<div class="snap-donut-canvas">'+
+        (aItems.length?'<canvas id="'+cid+'" width="96" height="96"></canvas>':'<div style="width:96px;height:96px;border-radius:50%;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center"><span style="font-family:var(--mono);font-size:11px;color:var(--muted)">0</span></div>')+
+        (aItems.length?'<div class="snap-donut-center"><div class="snap-donut-total">'+aItems.length+'</div><div class="snap-donut-sublbl">items</div></div>':'')+
+      '</div>'+
+      '<div class="snap-legend">'+legHTML+'</div>'+
+    '</div>';
+  };
+
+  const b2b=items.filter(t=>getTaskArea(t)==='B2B');
+  const b2c=items.filter(t=>getTaskArea(t)==='B2C');
+
+  return '<div class="snap-card">'+
+    '<div class="snap-header"><div>'+
+      '<div class="chart-lbl">Snapshot · '+p.label+'</div>'+
+      '<div class="chart-name">Distribucion de estados — B2B vs B2C</div>'+
+    '</div></div>'+
+    '<div class="snap-panels" style="grid-template-columns:1fr 1fr;">'+
+      '<div class="snap-panel">'+
+        '<div class="snap-panel-lbl">B2B — '+b2b.length+' items</div>'+
+        '<div class="snap-donuts" style="grid-template-columns:1fr;justify-items:center;">'+donutBlock('b2b',b2b,'#FF4081','B2B')+'</div>'+
+      '</div>'+
+      '<div class="snap-panel">'+
+        '<div class="snap-panel-lbl">B2C — '+b2c.length+' items</div>'+
+        '<div class="snap-donuts" style="grid-template-columns:1fr;justify-items:center;">'+donutBlock('b2c',b2c,'#7C4DFF','B2C')+'</div>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function buildSnapshotDonuts(data){
+  const VIEW_MAP={all:'all',tasks:'tasks',subs:'subs'};
+  const key=VIEW_MAP[_viewMode]||'all';
+  const items=data[key].items;
+  buildDonut('snap-'+key+'-b2b',items.filter(t=>getTaskArea(t)==='B2B'));
+  buildDonut('snap-'+key+'-b2c',items.filter(t=>getTaskArea(t)==='B2C'));
+}
+// ─────────────────────────────────────────────────────────────────
+
 function rebuildCharts(data){
   const M12=data.MONTHS12;
   buildCreadas(data,M12);buildCierre(data,M12);buildFlujo(data,M12);buildCycleTime(data,M12);buildCohorte(data,M12);
+  buildSnapshotDonuts(data);
 }
 
 function renderFilterBar(){
@@ -314,6 +441,7 @@ renderFilterBar()+
 renderViewToggle()+
 renderKPIs(data)+
 renderCycTimes(data)+
+renderSnapshot(data)+
 '<div class="chart-grid-2">'+
 '<div class="chart-card"><div class="chart-lbl">Creacion mensual <span class="exact">exacto</span></div><div class="chart-name">Creadas por mes</div><div style="position:relative;height:175px"><canvas id="c-cr"></canvas></div>'+(_viewMode==='all'?'<div class="legend"><div class="leg"><div class="leg-dot" style="background:#00d4a0"></div>Tareas padre</div><div class="leg"><div class="leg-dot" style="background:#818cf8"></div>Subtareas</div></div>':'')+'</div>'+
 '<div class="chart-card"><div class="chart-lbl">Velocidad de cierre <span class="exact">exacto</span></div><div class="chart-name">Cerradas por mes + acumulado</div><div style="position:relative;height:175px"><canvas id="c-ci"></canvas></div><div class="legend"><div class="leg"><div class="leg-dot" style="background:'+accent+'"></div>Cerradas / mes (izq.)</div><div class="leg"><div class="leg-dot" style="background:#fbbf24;height:3px;width:15px;border-radius:1px"></div>Acumulado (der.)</div></div></div>'+
@@ -377,7 +505,7 @@ window.PP={
     showLoading();
     let pct=0;
     const tick=setInterval(()=>{pct=Math.min(pct+2,85);const f=document.getElementById('pf');if(f)f.style.width=pct+'%';},250);
-    const msgs=['Conectando con ClickUp...','Trayendo tareas (pag 1)...','Trayendo tareas (pag 2)...','Leyendo custom fields...','Resolviendo areas...','Calculando cycle times...'];
+    const msgs=['Conectando con ClickUp...','Cargando tareas...','Resolviendo areas...','Calculando metricas...'];
     let mi=0;const mt=setInterval(()=>{mi=Math.min(mi+1,msgs.length-1);const e=document.getElementById('lmsg');if(e)e.textContent=msgs[mi];},3500);
     try{
       _all=await fetchAllTasks(this._t,this._l,(msg)=>{const e=document.getElementById('lmsg');if(e)e.textContent=msg;});
